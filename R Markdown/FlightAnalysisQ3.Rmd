@@ -1,0 +1,382 @@
+---
+title: "coursework_Q3"
+output: html_document
+date: "2023-03-17"
+---
+
+# Setting up the workspace
+## Installing the necessary packages
+```{r}
+# install.packages("DBI")
+library(DBI)
+# install.packages("dplyr")
+library(dplyr)
+# install.packages("ggplot2")
+library(ggplot2)
+# install.packages("skimr")
+library(skimr)
+```
+
+## Setting and checking working directory
+```{r}
+# Setting the working directory
+setwd("~/Library/CloudStorage/OneDrive-SIM-SingaporeInstituteofManagement/Year 2/ST2195 - Programming for Data Science/Coursework/dataverse_files")
+getwd()
+```
+
+```{r}
+# Connecting to the database
+conn <- dbConnect(RSQLite::SQLite(), "coursework_r.db")
+```
+
+# Data Wrangling
+```{r}
+# Checking and dealing with anomalies in data set
+airports_check <- dbGetQuery(conn, "SELECT iata FROM airports")
+```
+
+```{r}
+skim(airports_check)
+```
+
+# Question 3
+## 3. How does the number of people flying between different locations change over time?
+### Part 1: Top air traffic volume for airports
+```{r}
+# Identifying the top 10 air traffic volume for airports
+q3_airport_traffic <- dbGetQuery(conn,
+  "SELECT airports.airport, airports.iata, COUNT(*)
+   FROM ontime JOIN airports ON ontime.Dest = airports.iata
+   WHERE Cancelled = 0 AND Diverted = 0
+   GROUP BY airports.airport
+   ORDER BY COUNT(*) DESC LIMIT 10
+  ")
+```
+
+```{r}
+# Changing the column names of q3_airport_traffic
+colnames(q3_airport_traffic) <- c("Airport", "IATA Code", "Number of Flights")
+
+# Printing the output of q3_airport_traffic
+q3_airport_traffic
+
+# Checking the number of flight records
+sum(q3_airport_traffic$`Number of Flights`) # 7,124,177 flights from the top 10 airports
+```
+
+```{r}
+# Obtaining data needed to visualize the flight volumes for the top 10 airports
+q3p1 <- dbGetQuery(conn,
+  "SELECT airports.airport, airports.iata, COUNT(*) AS NumOfFlights, ontime.Year, ontime.Month
+   FROM ontime JOIN airports ON ontime.Dest = airports.iata
+   WHERE Cancelled = 0 AND Diverted = 0
+   GROUP BY airports.airport, ontime.Year, ontime.Month
+   ORDER BY airports.airport, ontime.Year, ontime.Month
+  ")
+```
+
+
+```{r}
+# Changing the column names of q3p1
+colnames(q3p1) <- c("Airport", "IATA Code", "Number of Flights", "Year", "Month")
+
+# Checking that the column names were changed
+head(q3p1)
+```
+
+```{r}
+# Create a new variable that combines the Year and Month columns
+q3p1$YearMonth <- as.Date(paste(q3p1$Year, sprintf("%02d", q3p1$Month), "01", sep = "-"), format = "%Y-%m-%d")
+
+# To check the total number of flights
+sum(q3p1$`Number of Flights`) # 21,271,928 flights
+```
+
+```{r}
+# Obtaining the number of flights for the top 10 airports
+top_airports <- q3p1 %>%
+  group_by(Airport) %>%
+  summarize(total_flights = sum(`Number of Flights`)) %>%
+  arrange(desc(total_flights)) %>%
+  slice(1:10) %>%
+  pull(Airport)
+print(top_airports)
+
+q3p1_top10 <- q3p1 %>% filter(Airport %in% top_airports)
+
+# Number of flights of the top 10 airports
+sum(q3p1_top10$`Number of Flights`) # 7124177 flights
+```
+
+```{r}
+# Create a line chart of the top 10 airports from 2005 to 2007
+ggplot(q3p1_top10, aes(x = YearMonth, y = `Number of Flights`, 
+                       color = `IATA Code`)) + 
+  geom_line() + 
+  scale_x_date(date_labels = "%b-%Y", date_breaks = "2 months") +
+  labs(title = "Figure 3a: Air Traffic Volume Trends of Top 10 US Airports", 
+       x = "Time Period", y = "Number of Flights", color = "Airports") +
+  theme_bw() +
+  theme(plot.title = element_text(size = 13, hjust = 0.5, face = "bold"),
+        axis.title = element_text(size = 12), 
+        axis.text.x = element_text(size = 9, angle = 45, vjust = .5, hjust = .5),
+        axis.text.y = element_text(size = 11)) +
+  ylim(10000, 40000)
+```
+
+#### Part 2: Top 10 air traffic volume for states
+```{r}
+# Identifying the top 10 air traffic volume for states
+q3_state_traffic <- dbGetQuery(conn,
+  "SELECT airports.state, COUNT(*)
+   FROM ontime JOIN airports ON ontime.Dest = airports.iata
+   WHERE Cancelled = 0 AND Diverted = 0
+   GROUP BY airports.state
+   ORDER BY COUNT(*) DESC LIMIT 10
+  ")
+```
+
+```{r}
+# Changing the column names of q3_state_traffic
+colnames(q3_state_traffic) <- c("State", "Number of Flights")
+
+# Printing the output of q3_state_traffic
+q3_state_traffic
+
+# Checking the total number of flights
+sum(q3_state_traffic$`Number of Flights`) # 12,697,714 flights from the top 10 states
+```
+
+```{r}
+# Obtaining data needed to visualize the flight volumes for the top 10 states
+q3p2 <- dbGetQuery(conn,
+  "SELECT ontime.Year, ontime.Month, airports.state, COUNT(*) AS NumOfFlights
+   FROM ontime JOIN airports ON ontime.Dest = airports.iata
+   WHERE Cancelled = 0 AND Diverted = 0 AND airports.state IS NOT NULL
+   GROUP BY airports.state, ontime.Year, ontime.Month
+   ORDER BY airports.state, ontime.Year, ontime.Month
+  ")
+```
+
+```{r}
+# Changing the column names of q3p2 
+colnames(q3p2) <- c("Year", "Month", "State", "Number of Flights")
+
+# Checking that the column names were changed
+head(q3p2)
+```
+
+```{r}
+# Create a new variable that combines the Year and Month columns
+q3p2$YearMonth <- as.Date(paste(q3p2$Year, sprintf("%02d", q3p2$Month), "01", sep = "-"), format = "%Y-%m-%d")
+
+# To check the total number of flights
+sum(q3p2$`Number of Flights`) # 21,257,880 flights
+```
+
+```{r}
+# Obtaining the number of flights for the top 10 states
+top_states <- q3p2 %>%
+  group_by(State) %>%
+  summarize(total_flights = sum(`Number of Flights`)) %>%
+  arrange(desc(total_flights)) %>%
+  slice(1:10) %>%
+  pull(State)
+
+q3p2_top10 <- q3p2 %>% filter(State %in% top_states)
+
+# Number of flights of the top 10 states
+sum(q3p2_top10$`Number of Flights`) # 12,697,714 flights
+```
+
+```{r}
+# Create a line chart of the top 10 states from 2005 to 2007
+ggplot(q3p2_top10, aes(x = YearMonth, y = `Number of Flights`, color = `State`)) + 
+  geom_line() + 
+  scale_x_date(date_labels = "%b-%Y", date_breaks = "2 months") +
+  labs(title = "Figure 3b: Air Traffic Volume Trends of Top 10 US States", 
+       x = "Time Period", y = "Number of Flights", color = "States") +
+  theme_bw() +
+  theme(plot.title = element_text(size = 13, hjust = 0.5, face = "bold"),
+        axis.title = element_text(size = 12), 
+        axis.text.x = element_text(size = 9, angle = 45, vjust = .5, hjust = .5),
+        axis.text.y = element_text(size = 11)) +
+  ylim(14000, 80000)
+```
+
+#### Part 3: Top 10 air traffic volume for cities
+```{r}
+# Identifying the top 10 air traffic volume for cities
+q3_city_traffic <- dbGetQuery(conn,
+  "SELECT airports.city, COUNT(*)
+   FROM ontime JOIN airports ON ontime.Dest = airports.iata
+   WHERE Cancelled = 0 AND Diverted = 0
+   GROUP BY airports.city
+   ORDER BY COUNT(*) DESC LIMIT 10
+  ")
+```
+
+```{r}
+# Changing the column names of q3_city_traffic
+colnames(q3_city_traffic) <- c("City", "Number of Flights")
+
+# Printing the output of q3_city_traffic
+q3_city_traffic
+
+# Number of flights of the top 10 cities
+sum(q3_city_traffic$`Number of Flights`) # 7,818,747 flights from the top 10 cities
+```
+
+```{r}
+# Obtaining data needed to visualize the flight volumes for the top 10 cities
+q3p3 <- dbGetQuery(conn,
+  "SELECT ontime.Year, ontime.Month, airports.city, COUNT(*) AS NumOfFlights
+   FROM ontime JOIN airports ON ontime.Dest = airports.iata
+   WHERE Cancelled = 0 AND Diverted = 0 AND airports.city IS NOT NULL
+   GROUP BY airports.city, ontime.Year, ontime.Month
+   ORDER BY airports.city, ontime.Year, ontime.Month
+  ")
+```
+
+```{r}
+# Changing the column names of q3
+colnames(q3p3) <- c("Year", "Month", "City", "Number of Flights")
+
+# Checking that the column names were changed
+head(q3p3)
+```
+
+```{r}
+# Create a new variable that combines the Year and Month columns
+q3p3$YearMonth <- as.Date(paste(q3p3$Year, sprintf("%02d", q3p3$Month), "01", sep = "-"), format = "%Y-%m-%d")
+
+# To check the total number of flights
+sum(q3p3$`Number of Flights`) # 21,257,880 flights
+```
+
+```{r}
+# Obtaining the number of flights for the top 10 cities
+top_cities <- q3p3 %>%
+  group_by(City) %>%
+  summarize(total_flights = sum(`Number of Flights`)) %>%
+  arrange(desc(total_flights)) %>%
+  slice(1:10) %>%
+  pull(City)
+
+q3p3_top10 <- q3p3 %>% filter(City %in% top_cities)
+
+# Number of flights of the top 10 cities
+sum(q3p3_top10$`Number of Flights`) # 7,818,747 flights
+```
+
+```{r}
+# Create a line chart of the top 10 cities from 2005 to 2007
+ggplot(q3p3_top10, aes(x = YearMonth, y = `Number of Flights`, color = `City`)) + 
+  geom_line() + 
+  scale_x_date(date_labels = "%b-%Y", date_breaks = "2 months") +
+  scale_y_continuous(labels = scales::comma_format()) +
+  labs(title = "Figure 3c: Air Traffic Volume Trends of Top 10 US Cities", 
+       x = "Time Period", y = "Number of Flights", color = "Cities") +
+  theme_bw() +
+  theme(plot.title = element_text(size = 13, hjust = 0.5, face = "bold"),
+        axis.title = element_text(size = 12), 
+        axis.text.x = element_text(size = 9, angle = 45, vjust = .5, hjust = .5),
+        axis.text.y = element_text(size = 11))
+```
+
+#### Part 4: Top 10 air traffic volume for flight routes
+```{r}
+# Identifying the top 10 air traffic volume for flight routes
+q3_route_traffic <- dbGetQuery(conn,
+   "SELECT ontime.Origin, ontime.Dest, COUNT(*) AS NumOfFlights
+    FROM ontime
+    WHERE Cancelled = 0 AND Diverted = 0
+    GROUP BY ontime.Origin, ontime.Dest
+    ORDER BY NumOfFlights DESC
+    LIMIT 10
+   ")
+```
+
+```{r}
+# Changing the column names of q3_route_traffic
+colnames(q3_route_traffic) <- c("Origin", "Destination", "Number of Flights")
+
+# Printing the output of q3_route_traffic
+q3_route_traffic
+
+# Number of flights of the top 10 routes
+sum(q3_route_traffic$`Number of Flights`) # 375,850 flights from the top 10 flight routes
+```
+
+```{r}
+# Adding a new column named "Route"
+dbExecute(conn, "ALTER TABLE ontime ADD Route")
+dbListFields(conn, "ontime")
+```
+
+```{r}
+# Grouping flight routes based on their origin and destination
+dbExecute(conn, "UPDATE ontime SET Route = Origin || '-' || Dest")
+```
+
+```{r}
+# Obtaining data needed to visualize the flight volumes for the top 10 flight routes
+q3p4 <- dbGetQuery(conn,
+                   "SELECT ontime.Year, ontime.Month, Route, COUNT(*) AS NumOfFlights
+                   FROM ontime
+                   WHERE Cancelled = 0 AND Diverted = 0 AND Route IS NOT NULL
+                   GROUP BY Route, Year, Month
+                   ORDER BY Route, Year, Month
+                   ")
+```
+
+```{r}
+# Changing the column names of q3p4
+colnames(q3p4) <- c("Year", "Month", "Route", "Number of Flights")
+
+# Checking that the column names were changed
+head(q3p4)
+```
+
+```{r}
+# Create a new variable that combines the Year and Month columns
+q3p4$YearMonth <- as.Date(paste(q3p4$Year, sprintf("%02d", q3p4$Month), "01", sep = "-"), format = "%Y-%m-%d")
+
+# To check the total number of flights
+sum(q3p4$`Number of Flights`) # 21,271,928 flights
+```
+
+```{r}
+# Obtaining the number of flights for the top 10 flight routes
+top_routes <- q3p4 %>%
+  group_by(Route) %>%
+  summarize(total_flights = sum(`Number of Flights`)) %>%
+  arrange(desc(total_flights)) %>%
+  slice(1:10) %>%
+  pull(Route)
+
+q3p4_top10 <- q3p4 %>% filter(Route %in% top_routes)
+
+# Number of flights of the top 10 flight routes
+sum(q3p4_top10$`Number of Flights`) # 375,850 flights
+```
+
+```{r}
+# Create a line chart of the top 10 flight routes from 2005 to 2007
+ggplot(q3p4_top10, aes(x = YearMonth, y = `Number of Flights`, color = `Route`)) + 
+  geom_line() + 
+  scale_x_date(date_labels = "%b-%Y", date_breaks = "2 months") +
+  labs(title = "Figure 3d: Air Traffic Volume Trends of Top 10 US Flight Routes", 
+       x = "Time Period", y = "Number of Flights", color = "Routes") +
+  theme_bw() +
+  theme(plot.title = element_text(size = 13, hjust = 0.5, face = "bold"),
+        axis.title = element_text(size = 12), 
+        axis.text.x = element_text(size = 9, angle = 45, vjust = .5, hjust = .5),
+        axis.text.y = element_text(size = 11)) +
+  ylim(500, 1930)
+```
+
+```{r}
+# Disconnecting from the database
+dbDisconnect(conn)
+```

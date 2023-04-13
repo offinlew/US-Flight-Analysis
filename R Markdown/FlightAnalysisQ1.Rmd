@@ -1,1 +1,630 @@
+---
+title: "coursework_Q1"
+output: html_document
+date: "2023-03-17"
+---
 
+# Setting up the workspace
+## Installing the necessary packages
+```{r}
+# install.packages("DBI")
+library(DBI)
+# install.packages("dplyr")
+library(dplyr)
+# install.packages("ggplot2")
+library(ggplot2)
+```
+
+## Setting and checking working directory
+```{r}
+# Setting the working directory
+setwd("~/Library/CloudStorage/OneDrive-SIM-SingaporeInstituteofManagement/Year 2/ST2195 - Programming for Data Science/Coursework/dataverse_files")
+getwd()
+```
+
+## Setting up the coursework_r database 
+```{r}
+if (file.exists("coursework_r.db")) 
+    file.remove("coursework_r.db")
+```
+
+```{r}
+# Connecting to the database
+conn <- dbConnect(RSQLite::SQLite(), "coursework_r.db")
+```
+
+## Creating tables in database
+```{r}
+# Loading multiple csv files individually into data frames
+airports <- read.csv("airports.csv", header = TRUE)
+carriers <- read.csv("carriers.csv", header = TRUE)
+planes <- read.csv("plane-data.csv", header = TRUE)
+ontime_2005 <- read.csv("2005.csv.bz2", header = TRUE)
+ontime_2006 <- read.csv("2006.csv.bz2", header = TRUE)
+ontime_2007 <- read.csv("2007.csv.bz2", header = TRUE)
+```
+
+```{r}
+# Using pipe operator to merge 2005-2007 flight data into one data frame
+ontime_all <- ontime_2005 %>% rbind(ontime_2006) %>% rbind(ontime_2007)
+nrow(ontime_all) # 21735733 records
+```
+
+```{r}
+# Importing data frames to coursework_r.db 
+dbWriteTable(conn, "airports", airports)
+dbWriteTable(conn, "carriers", carriers)
+dbWriteTable(conn, "planes", planes)
+dbWriteTable(conn, "ontime", ontime_all)
+
+# Removing temporary dataframes
+rm(ontime_2005,ontime_2006,ontime_2007)
+```
+
+```{r}
+# Viewing the list of tables and list of fields within each table
+dbListTables(conn)
+dbListFields(conn, "airports")
+dbListFields(conn, "carriers")
+dbListFields(conn, "planes")
+dbListFields(conn, "ontime")
+```
+
+```{r}
+# To verify the data from each year are present
+dbGetQuery(conn, "SELECT DISTINCT Year FROM ontime")
+```
+
+# Data Wrangling
+```{r}
+# Getting a summary of the data set
+ontime_check <- dbGetQuery(conn, "SELECT * FROM ontime")
+summary(ontime_check)
+```
+
+## Identifying anomalies in the "ontime" table
+```{r}
+ontime_DepTime_check <- dbGetQuery(conn, 
+  "SELECT DepTime
+   FROM ontime
+   WHERE DepTime > 2359
+   ORDER BY DepTime DESC
+  ")
+nrow(ontime_DepTime_check) # 4250 DepTime > 2359
+
+ontime_ArrTime_check <- dbGetQuery(conn, 
+  "SELECT ArrTime
+   FROM ontime
+   WHERE ArrTime > 2359
+   ORDER BY ArrTime DESC
+  ")
+nrow(ontime_ArrTime_check) # 18406 ArrTime > 2359
+
+ontime_CRSArrTime_check <- dbGetQuery(conn, 
+  "SELECT CRSArrTime
+   FROM ontime
+   WHERE CRSArrTime > 2359
+   ORDER BY CRSArrTime DESC
+  ")
+nrow(ontime_CRSArrTime_check) # 726 CRSTime > 2359
+```
+
+## Dealing with the anomalies in the "ontime" table
+```{r}
+# Correcting the values in the "ontime" table in the SQL database directly
+dbExecute(conn, 
+  "UPDATE ontime
+   SET DepTime = DepTime - 2400
+   WHERE DepTime > 2359
+  ") # executed on 4250 records
+
+dbExecute(conn, 
+  "UPDATE ontime
+   SET ArrTime = ArrTime - 2400
+   WHERE ArrTime > 2359
+  ") # executed on 18406 records
+
+dbExecute(conn, 
+  "UPDATE ontime
+   SET CRSArrTime = CRSArrTime - 2400
+   WHERE CRSArrTime > 2359
+  ") # executed on 726 records
+```
+
+```{r}
+# Removing temporary dataframes
+rm(ontime_check,ontime_DepTime_check, ontime_ArrTime_check, ontime_CRSArrTime_check)
+```
+
+# Question 1
+## 1. When is the best time of day, day of the week, and time of year to fly to minimise delays?
+### Part 1: Best time of day to fly to minimise delays
+#### Categorizing flights in the 'ontime' table by the scheduled departure time by intervals of 2 hours
+```{r}
+# Adding a new column named "DepTimeInterval"
+dbExecute(conn, "ALTER TABLE ontime ADD DepTimeInterval")
+
+# Grouping the respective departure times to the corresponding departure time interval (in 2-hour intervals)
+dbExecute(conn, 
+  "UPDATE ontime 
+   SET DepTimeInterval = CASE 
+      WHEN CRSDepTime BETWEEN 0 AND 199 THEN '00.00-01.59'
+      WHEN CRSDepTime BETWEEN 200 AND 399 THEN '02.00-03.59'
+      WHEN CRSDepTime BETWEEN 400 AND 599 THEN '04.00-05.59'
+      WHEN CRSDepTime BETWEEN 600 AND 799 THEN '06.00-07.59'
+      WHEN CRSDepTime BETWEEN 800 AND 999 THEN '08.00-09.59'
+      WHEN CRSDepTime BETWEEN 1000 AND 1199 THEN '10.00-11.59'
+      WHEN CRSDepTime BETWEEN 1200 AND 1399 THEN '12.00-13.59'
+      WHEN CRSDepTime BETWEEN 1400 AND 1599 THEN '14.00-15.59'
+      WHEN CRSDepTime BETWEEN 1600 AND 1799 THEN '16.00-17.59'
+      WHEN CRSDepTime BETWEEN 1800 AND 1999 THEN '18.00-19.59'
+      WHEN CRSDepTime BETWEEN 2000 AND 2199 THEN '20.00-21.59'
+      WHEN CRSDepTime BETWEEN 2200 AND 2399 THEN '22.00-23.59'
+    ELSE NULL
+   END
+  ")
+```
+
+#### Looking at the distribution of flights for each departure time interval
+```{r}
+# Distribution of flights for each departure time interval
+interval_overview <- dbGetQuery (conn, 
+  "SELECT DepTimeInterval, COUNT(*) AS NumOfFlights
+   FROM ontime
+   GROUP BY DepTimeInterval
+  ")
+```
+
+```{r}
+# Printing the distribution of flights for each departure time interval
+interval_overview
+```
+
+```{r}
+# Obtaining the average arrival delay for each departure time interval
+q1p1a <- dbGetQuery(conn, 
+  "SELECT DepTimeInterval, AVG(ArrDelay) AS AvgArrDelay
+   FROM ontime
+   WHERE Cancelled = 0 AND Diverted = 0
+   GROUP BY DepTimeInterval
+   ORDER BY DepTimeInterval
+  ")
+```
+
+```{r}
+# Changing the column names of q1p1a
+colnames(q1p1a) <- c("Departure Time Interval", "Average Arrival Delay")
+```
+
+```{r}
+# Plot of average arrival delay of flights by departure time interval
+ggplot(q1p1a, aes(x = `Departure Time Interval`, y = `Average Arrival Delay`)) +
+  geom_col(color = "black", fill = "#90d2d8", width = 0.8) +
+  geom_line(group = 1, color = "black") +
+  geom_point(shape = 21, color = "black", fill = "#e1ff00", size = 3) +
+  labs(title = "Figure 1.1a: Average Arrival Delay of Flights", 
+       x = "Departure Time Interval (24hr)", y = "Average Arrival Delay (in mins)") +
+  theme_bw() +
+  theme(plot.title = element_text(size = 15, hjust = 0.5, face = "bold"),
+        axis.title = element_text(size = 13),
+        axis.text.x = element_text(size = 11, angle = 20, vjust = 1, hjust = 1),
+        axis.text.y = element_text(size = 11)) +
+  geom_text(aes(label = round(`Average Arrival Delay`, 1)), size = 4, hjust = .5, vjust = -2) +
+  ylim(-.15,18)
+```
+
+```{r}
+# To obtain the percentage of cancelled, diverted, delayed and on-time performance for flights
+q1p1b <- dbGetQuery(conn,
+  "SELECT DepTimeInterval, (AVG(Cancelled)*100) AS AvgCnl_perc, (AVG(Diverted)*100) AS AvgDiv_perc, 
+    ((CAST(SUM(CASE WHEN ArrDelay > 0 THEN 1 ELSE 0 END) AS FLOAT)/CAST(COUNT(*) AS FLOAT))*100) AS AvgArrDelay_perc,                            ((CAST(SUM(CASE WHEN ArrDelay <= 15 THEN 1 ELSE 0 END) AS FLOAT)/CAST(COUNT(*) AS FLOAT))*100) AS on_time_performance
+   FROM ontime
+   GROUP BY DepTimeInterval
+   ORDER BY DepTimeInterval
+  ")
+```
+
+```{r}
+# Changing the column names of q1p1b
+colnames(q1p1b) <- c("Departure Time Interval", "% of Cancelled Flights", "% of Diverted Flights", "% of Delayed Flights", "On-Time Performance in %")
+```
+
+```{r}
+# Bar chart for percentage of cancelled flights
+ggplot(q1p1b, aes(x = `Departure Time Interval`, y = `% of Cancelled Flights`)) +
+  geom_col(color = "black", fill = "#ffecb8", width = 0.8) +
+  geom_line(group = 1, color = "black") +
+  geom_point(shape = 22, color = "black", fill = "#e1ff00", size = 3) +
+  labs(title = "Figure 1.1b: % of Cancelled Flights by Time of Day", 
+       x = "Departure Time Interval (24hr)", y = "Cancelled Flights (in %)") +
+  theme_bw() +
+  theme(plot.title = element_text(size = 15, hjust = 0.5, face = "bold"),
+        axis.title = element_text(size = 13),
+        axis.text.x = element_text(size = 11, angle = 20, vjust = 1, hjust = 1),
+        axis.text.y = element_text(size = 11)) +
+  geom_text(aes(label = round(`% of Cancelled Flights`, 2)), size = 4, hjust = .5, vjust = -1.5) +
+  ylim(0,2.75)
+```
+
+```{r}
+# Bar chart for percentage of delayed flights
+ggplot(q1p1b, aes(x = `Departure Time Interval`, y = `% of Delayed Flights`)) +
+  geom_col(color = "black", fill = "#f6a6b2", width = 0.8) +
+  geom_line(group = 1, color = "black") +
+  geom_point(shape = 23, color = "black", fill = "#e1ff00", size = 3) +
+  labs(title = "Figure 1.1c: % of Delayed Flights by Time of Day", 
+       x = "Departure Time Interval (24hr)", y = "Delayed Flights (in %)") +
+  theme_bw() +
+  theme(plot.title = element_text(size = 15, hjust = 0.5, face = "bold"),
+        axis.title = element_text(size = 13),
+        axis.text.x = element_text(size = 11, angle = 20, vjust = 1, hjust = 1),
+        axis.text.y = element_text(size = 11)) +
+  geom_text(aes(label = round(`% of Delayed Flights`, 2)), size = 4, hjust = .5, vjust = -1.8) +
+  ylim(0,57.23)
+```
+
+```{r}
+# Bar chart for on-time performance of flights in percentage
+  # On-time performance measures punctuality within 15 minutes of the scheduled arrival time
+ggplot(q1p1b, aes(x = `Departure Time Interval`, y = `On-Time Performance in %`)) +
+  geom_col(color = "black", fill = "#b7ded2", width = 0.8) +
+  geom_line(group = 1, color = "black") +
+  geom_point(shape = 24, color = "black", fill = "#e1ff00", size = 3) +
+  labs(title = "Figure 1.1d: On-time Performance (%) by Time of Day", 
+       x = "Departure Time Interval (24hr)", y = "On-time Performance (in %)") +
+  theme_bw() +
+  theme(plot.title = element_text(size = 15, hjust = 0.5, face = "bold"),
+        axis.title = element_text(size = 13),
+        axis.text.x = element_text(size = 11, angle = 20, vjust = 1, hjust = 1),
+        axis.text.y = element_text(size = 11)) +
+  geom_text(aes(label = round(`On-Time Performance in %`, 2)), size = 4, hjust = .5, vjust = -1.5) +
+  ylim(0,95.4)
+```
+
+```{r}
+# Bar chart for percentage of diverted flights 
+    # Note: This chart was not included in the report as values were negligible
+ggplot(q1p1b, aes(x = `Departure Time Interval`, y = `% of Diverted Flights`)) +
+  geom_col(color = "black", fill = "#f7c297", width = 0.8) +
+  geom_line(group = 1, color = "black") +
+  geom_point(shape = 21, color = "black", fill = "#e1ff00", size = 3) +
+  labs(title = "Figure 1.1e: % of Diverted Flights by Time of Day", subtitle = "Based on data collected from January 2005 to December 2007", x = "Departure Time Interval (24hr)", y = "Diverted Flights (in %)") +
+  theme_bw() +
+  theme(plot.title = element_text(face='bold', hjust = .5, size = 14), plot.subtitle = element_text(size = 11, hjust = 0.5), axis.text.x = element_text(size = 8, angle = 20, vjust = 1, hjust = 1)) +
+  geom_text(aes(label = round(`% of Diverted Flights`, 2)), size = 4, hjust = .5, vjust = -1.5) +
+  ylim(0,0.286)
+```
+
+### 1.2 Best day of week to fly to minimise delays
+#### Categorizing flights in the 'ontime' table by the seasons
+```{r}
+# Adding a new column in the "ontime" table named "Season"
+dbExecute(conn, "ALTER TABLE ontime ADD Season")
+
+# Grouping the respective months to the corresponding season
+dbExecute(conn, 
+  "UPDATE ontime 
+    SET Season = CASE 
+        WHEN Month BETWEEN 3 AND 5 THEN 'Spring'
+        WHEN Month BETWEEN 6 AND 8 THEN 'Summer'
+        WHEN Month BETWEEN 9 AND 11 THEN 'Autumn'
+      ELSE 'Winter'
+    END
+  ")
+```
+
+```{r}
+# Obtaining the average arrival delay for each day of week and season
+q1p2a <- dbGetQuery(conn, 
+  "SELECT Season, DayOfWeek, AVG(ArrDelay) AS AvgArrDelay
+   FROM ontime
+   WHERE Cancelled = 0 AND Diverted = 0
+   GROUP BY Season, DayOfWeek
+   ORDER BY AvgArrDelay
+  ")
+```
+
+```{r}
+# Changing the column names of q1p2a
+colnames(q1p2a) <- c("Season", "Day Of Week", "Average Arrival Delay")
+
+# Printing the output of q1p2a
+q1p2a
+```
+
+```{r}
+# Converting the Season column into a factor with 4 levels
+q1p2a$Season <- factor(q1p2a$Season, levels = c("Spring", "Summer", "Autumn", "Winter"))
+
+# Plot of average arrival delay of flights by day of week and season
+ggplot(q1p2a, aes(x = `Day Of Week`, y = `Average Arrival Delay`, fill = `Season`)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  geom_point(shape = 21, color = "black", fill = "#e1ff00", size = 2.5) +
+  geom_hline(data = q1p2a %>% group_by(Season) %>% summarize(avg_delay = mean(`Average Arrival Delay`)),
+             aes(yintercept = avg_delay), linetype = "dashed", color = "red") +
+  facet_wrap(~`Season`, ncol = 4, scales = "free_x") +
+  labs(title = "Figure 1.2a: Average Arrival Delay by Day of Week and Season", 
+       x = "Day of Week and Season", 
+       y = "Average Arrival Delay (in mins)", 
+       fill = "Season") +
+  scale_fill_manual(values = c("Spring" = "#00FF7F", "Summer" = "#FFD700",
+                               "Autumn" = "#FFA500", "Winter" = "#87CEEB"),
+                    labels = c("Spring", "Summer", "Autumn", "Winter")) +
+  theme_linedraw() +
+  theme(plot.title = element_text(size = 13, hjust = 0.5, face = "bold"),
+        axis.title = element_text(size = 12),
+        axis.text.x = element_text(size = 10, angle = 45, vjust = 1, hjust = 1),
+        axis.text.y = element_text(size = 11)) +
+  geom_text(aes(label = round(`Average Arrival Delay`, 1)), size = 3, hjust = .5, vjust = -1) +
+  scale_x_continuous(breaks = 1:7, labels = c("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")) +
+  scale_y_continuous(breaks = seq(0, 20, 5))
+```
+
+```{r}
+# To obtain the percentage of cancelled, diverted, delayed and on-time performance for flights
+q1p2b <- dbGetQuery(conn,
+  "SELECT Season, DayOfWeek, (AVG(Cancelled)*100) AS AvgCnl_perc, (AVG(Diverted)*100) AS AvgDiv_perc, 
+    ((CAST(SUM(CASE WHEN ArrDelay > 0 THEN 1 ELSE 0 END) AS FLOAT)/CAST(COUNT(*) AS FLOAT))*100) AS AvgArrDelay_perc, 
+    ((CAST(SUM(CASE WHEN ArrDelay <= 15 THEN 1 ELSE 0 END) AS FLOAT)/CAST(COUNT(*) AS FLOAT))*100) AS on_time_performance
+   FROM ontime
+   GROUP BY Season, DayOfWeek
+   ORDER BY DayOfWeek, Season
+  ")
+```
+
+
+```{r}
+# Changing the column names of q1p2b
+colnames(q1p2b) <- c("Season", "Day of Week", "% of Cancelled Flights", "% of Diverted Flights", "% of Delayed Flights", "On-time Performance in %")
+
+# Printing the output of q1p2b
+q1p2b
+```
+
+```{r}
+# Converting the Season column into a factor with 4 levels
+q1p2b$Season <- factor(q1p2b$Season, levels = c("Spring", "Summer", "Autumn", "Winter"))
+
+# Bar chart for percentage of cancelled flights 
+ggplot(q1p2b, aes(x = `Day of Week`, y = `% of Cancelled Flights`, fill = `Season`)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  geom_point(shape = 22, color = "black", fill = "#e1ff00", size = 2.5) +
+  geom_hline(data = q1p2b %>% group_by(Season) %>% summarize(avg_cancelled = mean(`% of Cancelled Flights`)),
+             aes(yintercept = avg_cancelled), linetype = "dashed", color = "red") +
+  facet_wrap(~`Season`, ncol = 7, scales = "free_x") +
+  labs(title = "Figure 1.2b: Cancelled Flights (in %) by Day of Week and Season", 
+       x = "Day Of Week by Seasons", y = "Cancelled Flights (in %)", fill = "Season") +
+  scale_fill_manual(values = c("Spring" = "#00FF7F", "Summer" = "#FFD700",
+                               "Autumn" = "#FFA500", "Winter" = "#87CEEB"),
+                    labels = c("Spring", "Summer", "Autumn", "Winter")) +
+  theme_linedraw() +
+  theme(plot.title = element_text(size = 13, hjust = 0.5, face = "bold"),
+        axis.title = element_text(size = 12),
+        axis.text.x = element_text(size = 10, angle = 45, vjust = 1, hjust = 1),
+        axis.text.y = element_text(size = 11)) +
+  geom_text(aes(label = round(`% of Cancelled Flights`, 1)), size = 3, hjust = .5, vjust = -1) +
+  scale_x_continuous(breaks = 1:7, labels = c("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")) +
+  scale_y_continuous(breaks = seq(0, 4, 0.5))
+```
+
+```{r}
+# Bar chart for percentage of delayed flights 
+ggplot(q1p2b, aes(x = `Day of Week`, y = `% of Delayed Flights`, fill = `Season`)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  geom_point(shape = 23, color = "black", fill = "#e1ff00", size = 2.5) +
+  geom_hline(data = q1p2b %>% group_by(Season) %>% summarize(avg_delayed = mean(`% of Delayed Flights`)),
+             aes(yintercept = avg_delayed), linetype = "dashed", color = "red") +
+  facet_wrap(~`Season`, ncol = 7, scales = "free_x") +
+  labs(title = "Figure 1.2c: Delayed Flights (in %) by Day of Week and Season", 
+       x = "Day Of Week by Seasons", y = "Delayed Flights (in %)", fill = "Season") +
+  scale_fill_manual(values = c("Spring" = "#00FF7F", "Summer" = "#FFD700",
+                               "Autumn" = "#FFA500", "Winter" = "#87CEEB"),
+                    labels = c("Spring", "Summer", "Autumn", "Winter")) +
+  theme_linedraw() +
+  theme(plot.title = element_text(size = 13, hjust = 0.5, face = "bold"),
+        axis.title = element_text(size = 12),
+        axis.text.x = element_text(size = 10, angle = 45, vjust = 1, hjust = 1),
+        axis.text.y = element_text(size = 11)) +
+  geom_text(aes(label = round(`% of Delayed Flights`, 1)), size = 2.5, hjust = .5, vjust = -1) +
+  scale_x_continuous(breaks = 1:7, labels = c("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")) +
+  scale_y_continuous(breaks = seq(0, 60, 10))
+```
+
+```{r}
+# Bar chart for on-time performance of flights in percentage
+ggplot(q1p2b, aes(x = `Day of Week`, y = `On-time Performance in %`, fill = `Season`)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  geom_point(shape = 24, color = "black", fill = "#e1ff00", size = 2.5) +
+  geom_hline(data = q1p2b %>% group_by(Season) %>% summarize(avg_otp = mean(`On-time Performance in %`)),
+             aes(yintercept = avg_otp), linetype = "dashed", color = "red") +
+  facet_wrap(~`Season`, ncol = 7, scales = "free_x") +
+  labs(title = "Figure 1.2d: On-time Performance (in %) by Day of Week and Season", 
+       x = "Day Of Week by Seasons", y = "On-time Performance (in %)", fill = "Season") +
+  scale_fill_manual(values = c("Spring" = "#00FF7F", "Summer" = "#FFD700",
+                               "Autumn" = "#FFA500", "Winter" = "#87CEEB"),
+                    labels = c("Spring", "Summer", "Autumn", "Winter")) +
+  theme_linedraw() +
+  theme(plot.title = element_text(size = 13, hjust = 0.5, face = "bold"),
+        axis.title = element_text(size = 12),
+        axis.text.x = element_text(size = 10, angle = 45, vjust = 1, hjust = 1),
+        axis.text.y = element_text(size = 11)) +
+  geom_text(aes(label = round(`On-time Performance in %`, 1)), size = 2.4, hjust = .5, vjust = -1.2) +
+  scale_x_continuous(breaks = 1:7, labels = c("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")) +
+  scale_y_continuous(breaks = seq(0, 90, 10))
+```
+
+```{r}
+# Bar chart for percentage of diverted flights 
+ggplot(q1p2b, aes(x = `Day of Week`, y = `% of Diverted Flights`, fill = `Season`)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  geom_point(shape = 21, color = "black", fill = "#e1ff00", size = 2) +
+  geom_hline(data = q1p2b %>% group_by(Season) %>% summarize(avg_diverted = mean(`% of Diverted Flights`)),
+             aes(yintercept = avg_diverted), linetype = "dashed", color = "red") +
+  facet_wrap(~`Season`, ncol = 7, scales = "free_x") +
+  labs(title = "Figure 1.2e: Diverted Flights (in %) by Day of Week and Season", 
+       x = "Day Of Week by Seasons", y = "Diverted Flights (in %)", fill = "Season") +
+  scale_fill_manual(values = c("Spring" = "#00FF7F", "Summer" = "#FFD700",
+                               "Autumn" = "#FFA500", "Winter" = "#87CEEB"),
+                    labels = c("Spring", "Summer", "Autumn", "Winter")) +
+  theme_linedraw() +
+  theme(plot.title = element_text(size = 13, hjust = 0.5, face = "bold"),
+        axis.title = element_text(size = 12),
+        axis.text.x = element_text(size = 10, angle = 45, vjust = 1, hjust = 1),
+        axis.text.y = element_text(size = 11)) +
+  geom_text(aes(label = round(`% of Diverted Flights`, 2)), size = 2.5, hjust = .5, vjust = -1) +
+  scale_x_continuous(breaks = 1:7, labels = c("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")) +
+  scale_y_continuous(breaks = seq(0, 0.4, 0.05))
+```
+
+### Part 3: Best time of year to fly to minimise delays
+```{r}
+# Obtaining the average arrival delay for each month and season
+q1p3a <- dbGetQuery(conn, 
+  "SELECT Month, Season, AVG(ArrDelay) AS AvgArrDelay
+   FROM ontime
+   WHERE Cancelled = 0 AND Diverted = 0
+   GROUP BY Season, Month
+   ORDER BY Month, Season
+  ")
+```
+
+```{r}
+# Changing the column names of q1p3a
+colnames(q1p3a) <- c("Month", "Season", "Average Arrival Delay")
+
+# Printing the output of q1p3a
+q1p3a
+```
+
+```{r}
+# Converting the 'Season' column into a factor with 4 levels
+q1p3a$Season <- factor(q1p3a$Season, levels = c("Spring", "Summer", "Autumn", "Winter"))
+
+# Plot of average arrival delay of flights by month and season
+ggplot(q1p3a, aes(x = Month, y = `Average Arrival Delay`, fill = Season)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  geom_point(shape = 21, color = "black", fill = "#e1ff00", size = 3) +
+  labs(title = "Figure 1.3a: Average Arrival Delay by Month and Season", 
+       x = "Month and Season", y = "Average Arrival Delay (in mins)", fill = "Season") +
+  scale_fill_manual(values = c("Spring" = "#00FF7F", "Summer" = "#FFD700", "Autumn" = "#FFA500", "Winter" = "#87CEEB"),
+                    labels = c("Spring", "Summer", "Autumn", "Winter")) +
+  theme_linedraw() +
+  theme(plot.title = element_text(size = 13, hjust = 0.5, face = "bold"), 
+        axis.title = element_text(size = 12), 
+        axis.text.x = element_text(size = 11, vjust = .5, hjust = .5),
+        axis.text.y = element_text(size = 11)) +
+  geom_text(aes(label = round(`Average Arrival Delay`, 1)), size = 3.5, hjust = .5, vjust = -1) +
+  scale_x_continuous(breaks = 1:12, labels = c("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")) +
+  scale_y_continuous(breaks = seq(0, 15, 3)) +
+  geom_hline(yintercept = mean(q1p3a$`Average Arrival Delay`), color = "red", linetype = "dashed")
+```
+
+```{r}
+# To obtain the percentage of cancelled, diverted, delayed and on-time performance for flights
+q1p3b <- dbGetQuery(conn,
+  "SELECT Month, Season, (AVG(Cancelled)*100), (AVG(Diverted)*100), 
+    ((CAST(SUM(CASE WHEN ArrDelay > 0 THEN 1 ELSE 0 END) AS FLOAT)/CAST(COUNT(*) AS FLOAT))*100), 
+    ((CAST(SUM(CASE WHEN ArrDelay <= 15 THEN 1 ELSE 0 END) AS FLOAT)/CAST(COUNT(*) AS FLOAT))*100) AS on_time_performance
+   FROM ontime
+   GROUP BY Season, Month
+   ORDER BY Month, Season
+  ")
+```
+
+```{r}
+# Changing the column names of q1p3b
+colnames(q1p3b) <- c("Month", "Season", "% of Cancelled Flights", "% of Diverted Flights", "% of Delayed Flights", "On-time Performance in %")
+
+# Printing the output of q1p3b
+q1p3b
+```
+
+```{r}
+# Bar chart for percentage of cancelled flights 
+ggplot(q1p3b, aes(x = Month, y = `% of Cancelled Flights`, fill = Season)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  geom_point(shape = 22, color = "black", fill = "#e1ff00", size = 3) +
+  labs(title = "Figure 1.3b: Cancelled Flights (in %) by Month and Season", 
+       x = "Month and Season", y = "Cancelled Flights (in %)", fill = "Season") +
+  scale_fill_manual(values = c("Spring" = "#00FF7F", "Summer" = "#FFD700", "Autumn" = "#FFA500", "Winter" = "#87CEEB"), 
+                    labels = c("Spring", "Summer", "Autumn", "Winter")) +
+  theme_linedraw() +
+  theme(plot.title = element_text(size = 13, hjust = 0.5, face = "bold"),
+        axis.title = element_text(size = 12),
+        axis.text.x = element_text(size = 10, vjust = .5, hjust = .5),
+        axis.text.y = element_text(size = 11)) +
+  geom_text(aes(label = round(`% of Cancelled Flights`, 2)), size = 3.5, hjust = .5, vjust = -1) +
+  scale_x_continuous(breaks = 1:12, labels = c("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")) +
+  scale_y_continuous(breaks = seq(0, 3, 0.5)) +
+  geom_hline(yintercept = mean(q1p3b$`% of Cancelled Flights`), color = "red", linetype = "dashed")
+```
+
+```{r}
+# Bar chart for percentage of delayed flights 
+ggplot(q1p3b, aes(x = Month, y = `% of Delayed Flights`, fill = Season)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  geom_point(shape = 23, color = "black", fill = "#e1ff00", size = 3) +
+  labs(title = "Figure 1.3c: Delayed Flights (in %) by Month and Season", 
+       x = "Month and Season", y = "Delayed Flights (in %)", fill = "Season") +
+  scale_fill_manual(values = c("Spring" = "#00FF7F", "Summer" = "#FFD700",
+                               "Autumn" = "#FFA500", "Winter" = "#87CEEB"),
+                    labels = c("Spring", "Summer", "Autumn", "Winter")) +
+  theme_linedraw() +
+  theme(plot.title = element_text(size = 13, hjust = 0.5, face = "bold"),
+        axis.title = element_text(size = 12),
+        axis.text.x = element_text(size = 10, vjust = .5, hjust = .5),
+        axis.text.y = element_text(size = 11)) +
+  geom_text(aes(label = round(`% of Delayed Flights`, 1)), size = 3.5, hjust = .5, vjust = -1) +
+  scale_x_continuous(breaks = 1:12, labels = c("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")) +
+  scale_y_continuous(breaks = seq(0, 60, 5)) +
+  geom_hline(yintercept = mean(q1p3b$`% of Delayed Flights`), color = "red", linetype = "dashed")
+```
+
+```{r}
+# Bar chart for on-time performance of flights in percentage
+ggplot(q1p3b, aes(x = Month, y = `On-time Performance in %`, fill = Season)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  geom_point(shape = 24, color = "black", fill = "#e1ff00", size = 3) +
+  labs(title = "Figure 1.3d: On-time Performance (in %) by Month and Season", 
+       x = "Month and Season", y = "On-time Performance (in %)", 
+       fill = "Season") +
+  scale_fill_manual(values = c("Spring" = "#00FF7F", "Summer" = "#FFD700",
+                               "Autumn" = "#FFA500", "Winter" = "#87CEEB"),
+                    labels = c("Spring", "Summer", "Autumn", "Winter")) +
+  theme_linedraw() +
+  theme(plot.title = element_text(size = 13, hjust = 0.5, face = "bold"),
+        axis.title = element_text(size = 12),
+        axis.text.x = element_text(size = 10, vjust = .5, hjust = .5),
+        axis.text.y = element_text(size = 11)) +
+  geom_text(aes(label = round(`On-time Performance in %`, 1)), size = 3, hjust = .5, vjust = -1.3) +
+  scale_x_continuous(breaks = 1:12, labels = c("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")) +
+  scale_y_continuous(breaks = seq(0, 90, 10)) +
+  geom_hline(yintercept = mean(q1p3b$`On-time Performance in %`), color = "red", linetype = "dashed")
+```
+
+```{r}
+# Bar chart for percentage of diverted flights 
+    # Note: This chart was not included in the report as values were negligible
+ggplot(q1p3b, aes(x = Month, y = `% of Diverted Flights`, fill = Season)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  geom_point(shape = 21, color = "black", fill = "#e1ff00", size = 3) +
+  labs(title = "Figure 1.3e: Diverted Flights (in %) by Month and Season", 
+       x = "Month", y = "Diverted Flights (in %)", fill = "Season") +
+  scale_fill_manual(values = c("Spring" = "#00FF7F", "Summer" = "#FFD700",
+                               "Autumn" = "#FFA500", "Winter" = "#87CEEB"),
+                    labels = c("Spring", "Summer", "Autumn", "Winter")) +
+  theme_linedraw() +
+  theme(plot.title = element_text(size = 13, hjust = 0.5, face = "bold"),
+        axis.title = element_text(size = 12),
+        axis.text.x = element_text(size = 10, vjust = .5, hjust = .5),
+        axis.text.y = element_text(size = 11)) +
+  geom_text(aes(label = round(`% of Diverted Flights`, 2)), size = 3.5, hjust = .5, vjust = -1) +
+  scale_x_continuous(breaks = 1:12, labels = c("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")) +
+  scale_y_continuous(breaks = seq(0, 0.4, 0.1)) +
+  geom_hline(yintercept = mean(q1p3b$`% of Diverted Flights`), color = "red", linetype = "dashed")
+```
+
+```{r}
+# Disconnecting from the database
+dbDisconnect(conn)
+```

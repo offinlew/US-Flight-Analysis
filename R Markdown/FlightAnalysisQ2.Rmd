@@ -1,0 +1,312 @@
+---
+title: "coursework_Q2"
+output: html_document
+date: "2023-03-17"
+---
+
+# Setting up the workspace
+## Installing the necessary packages
+```{r}
+# install.packages("DBI")
+library(DBI)
+# install.packages("dplyr")
+library(dplyr)
+# install.packages("ggplot2")
+library(ggplot2)
+```
+
+## Setting and checking working directory
+```{r}
+# Setting the working directory
+setwd("~/Library/CloudStorage/OneDrive-SIM-SingaporeInstituteofManagement/Year 2/ST2195 - Programming for Data Science/Coursework/dataverse_files")
+getwd()
+```
+
+```{r}
+# Connecting to the database
+conn <- dbConnect(RSQLite::SQLite(), "coursework_r.db")
+```
+
+# Data Wrangling
+## Exploring the ages of planes to identify anomalies, if any
+```{r}
+dbGetQuery(conn, 
+  "SELECT year
+   FROM planes
+   WHERE year > 0
+   ORDER BY year ASC LIMIT 5
+  ") # There are anomalies (Years with value of 0), and the oldest plane was manufactured in 1946
+```
+
+```{r}
+age_anomalies_1 <- dbGetQuery(conn, 
+  "SELECT planes.year AS year_manufactured, ontime.year AS year_flown, 
+    (ontime.year - planes.year) AS plane_age
+   FROM ontime
+   INNER JOIN planes ON ontime.TailNum = planes.tailnum
+   WHERE plane_age < 0
+   ORDER BY plane_age
+  ") 
+summary(age_anomalies_1) # There were planes with negative age, e.g. -1 & -2
+```
+
+```{r}
+age_anomalies_2 <-dbGetQuery(conn, 
+  "SELECT planes.year AS year_manufactured, ontime.year AS year_flown, 
+    (ontime.year - planes.year) AS plane_age
+   FROM ontime
+   INNER JOIN planes ON ontime.TailNum = planes.tailnum
+   WHERE plane_age > 0
+   ORDER BY plane_age DESC
+  ") 
+summary(age_anomalies_2) # Oldest plane age was 2007, which is impossible
+```
+
+```{r}
+check_year_manufactured <- dbGetQuery(conn, 
+  "SELECT planes.year AS year_manufactured, ontime.year AS year_flown, 
+    (ontime.year - planes.year) AS plane_age
+   FROM ontime
+   INNER JOIN planes ON ontime.TailNum = planes.tailnum
+   WHERE plane_age >= 0 AND plane_age < 200
+   ORDER BY year_manufactured ASC
+  ") 
+head(check_year_manufactured) # Oldest plane still in operation was manufactured in 1956
+```
+Moving forward, queries will only select planes with the age of 0 to 51, since the oldest plane still in operation was manufactured in 1956, meaning that the age of the oldest plane is 51 years old as the dataset only contain flights from 2005 to 2007 to filter out the anomalies identified.
+
+# Question 2
+## 2. Do older planes suffer more delays?
+### Part 1: Calculating the age of the planes and dealing with anomalies in data set
+```{r}
+# Calculating the age of the planes, filtering out the anomalies identified previously
+q2 <- dbGetQuery(conn, 
+  "SELECT (ontime.year - planes.year) AS plane_age, 
+    AVG(ArrDelay) AS AvgArrDelay, COUNT(*) AS NumOfFlights
+   FROM ontime
+   INNER JOIN planes ON ontime.TailNum = planes.tailnum
+   WHERE plane_age >= 0 AND plane_age <= 51
+   GROUP BY plane_age
+   ORDER BY plane_age
+  ")
+```
+
+```{r}
+# Changing the column names of q2
+colnames(q2) <- c("Age of Planes", "Average Arrival Delay", "Number of Flights")
+
+# Printing the output of q2
+q2
+
+# Checking the number of flight records
+sum(q2$`Number of Flights`) # 16,630,022 flights
+```
+#### Distribution of number of flights by plane age
+```{r}
+ggplot(q2, aes(x = factor(`Age of Planes`), y = `Number of Flights`)) +
+  geom_bar(stat = "identity", fill = "#90d2d8") +
+  labs(title = "Figure 2a: Distribution of Flights by Plane Age", 
+       x = "Age of Planes",
+       y = "Number of Flights") +
+  theme_linedraw() +
+  theme(plot.title = element_text(size = 13, hjust = 0.5, face = "bold"),
+        axis.title = element_text(size = 12), 
+        axis.text.x = element_text(size = 11, vjust = .5, hjust = .5),
+        axis.text.y = element_text(size = 11)) +
+  geom_hline(yintercept = mean(q2$`Number of Flights`), color = "red", 
+             linetype = "dashed") +
+  scale_x_discrete(breaks = seq(0, 51, 5)) +
+  ylim(0, 1500000) # majority of flights are undertaken by planes aged 22 or younger
+```
+
+#### Scatter plot of the average delay time by plane age (Overall)
+```{r}
+ggplot(q2, aes(x = `Age of Planes`, y = `Average Arrival Delay`)) +
+  geom_point(alpha= .3, size = 2, colour = "#2B3F40") +
+  geom_smooth(aes(x = `Age of Planes`, y = `Average Arrival Delay`), se = TRUE, 
+              method = lm, color = "#567E81", fill = "#90d2d8") +
+  labs(title = "Figure 2b: Scatterplot of Average Arrival Delay by Plane Age", 
+       x = "Age of Planes", 
+       y = "Average Arrival Delay (in mins)") +
+  theme_linedraw() +
+  theme(plot.title = element_text(size = 13, hjust = 0.5, face = "bold"),
+        axis.title = element_text(size = 12), 
+        axis.text.x = element_text(size = 11, vjust = .5, hjust = .5),
+        axis.text.y = element_text(size = 11))
+```
+
+#### Calculating the percentage of delayed flights
+```{r}
+q2_delayed_perc <- dbGetQuery(conn,
+  "SELECT (ontime.year - planes.year) AS plane_age, COUNT(*) AS NumOfFlights,
+    SUM(CASE WHEN ontime.ArrDelay > 0 THEN 1 ELSE 0 END) AS NumDelayedFlights,
+    ((CAST(SUM(CASE WHEN ArrDelay > 0 THEN 1 ELSE 0 END) AS FLOAT)/CAST(COUNT(*)
+    AS FLOAT))*100) AS delayed_percentage
+   FROM ontime INNER JOIN planes ON ontime.TailNum = planes.tailnum
+   WHERE plane_age >= 0 AND plane_age <= 51
+   GROUP BY plane_age
+   ORDER BY plane_age
+  ")
+```
+
+```{r}
+# Changing the column names of q2_delayed_perc
+colnames(q2_delayed_perc) <- c("Age of Planes", "Number of Flights", "Number of Delayed Flights", "% of Delayed Flights")
+
+# Printing the output of q2_delayed_perc
+q2_delayed_perc
+```
+
+#### Scatterplot of percentage of delayed flights by plane age (Overall)
+```{r}
+ggplot(q2_delayed_perc, aes(x = `Age of Planes`, y = `% of Delayed Flights`)) +
+  geom_point(alpha= .3, size = 2, colour = "#5c0a32") +
+  geom_smooth(aes(x = `Age of Planes`, y = `% of Delayed Flights`), se = TRUE, 
+              method = lm, color = "#e7197e", fill = "#eb4697") +
+  labs(title = "Figure 2c: Scatterplot of Percentage of Delayed Flights by Plane Age", 
+       x = "Age of Planes", y = "Percentage of Delayed Flights") +
+  theme_linedraw() +
+  theme(plot.title = element_text(size = 13, hjust = 0.5, face = "bold"),
+        axis.title = element_text(size = 12), 
+        axis.text.x = element_text(size = 11, vjust = .5, hjust = .5),
+        axis.text.y = element_text(size = 11))
+```
+
+#### Part 2: Segment the newer planes into one group (Newer planes: <= 22)
+```{r}
+# Selecting only flights with planes aged 22 or younger
+q2_newer_planes <- q2 %>% filter(q2$`Age of Planes` <= 22)
+```
+
+```{r}
+# Verifying the age only includes 0 to 22
+summary(q2_newer_planes)
+
+# Verifying the total number of flights
+sum(q2_newer_planes$`Number of Flights`) # 16,050,236 flights (meaning there should only be 579,786 flights > 22 y/o)
+```
+
+#### Scatterplot of percentage of delayed flights by plane age (Newer planes)
+```{r}
+ggplot(q2_newer_planes, aes(x = `Age of Planes`, y = `Average Arrival Delay`)) +
+  geom_point(alpha= .3, size = 2, colour = "#b2b280") +
+  geom_smooth(aes(x = `Age of Planes`, y = `Average Arrival Delay`), se = TRUE, 
+              method = lm, color = "#ffff1f", fill = "#ffffb7") +
+  labs(title = "Figure 2d: Scatterplot of Average Arrival Delay by Plane Age (Newer Planes)", 
+        x = "Age of Planes", y = "Average Arrival Delay (in mins)") +
+  theme_linedraw() + 
+  theme(plot.title = element_text(size = 13, hjust = 0.5, face = "bold"),
+        axis.title = element_text(size = 12), 
+        axis.text.x = element_text(size = 11, vjust = .5, hjust = .5),
+        axis.text.y = element_text(size = 11))
+```
+
+#### Calculating the percentage of delayed flights (Newer planes)
+```{r}
+q2_newer_delayed_perc <- dbGetQuery(conn,
+  "SELECT (ontime.year - planes.year) AS plane_age, COUNT(*) AS NumOfFlights,
+    SUM(CASE WHEN ontime.ArrDelay > 0 THEN 1 ELSE 0 END) AS NumDelayedFlights,
+    ((CAST(SUM(CASE WHEN ArrDelay > 0 THEN 1 ELSE 0 END) AS FLOAT)/CAST(COUNT(*)
+      AS FLOAT))*100) AS delayed_percentage
+   FROM ontime INNER JOIN planes ON ontime.TailNum = planes.tailnum
+   WHERE plane_age >= 0 AND plane_age <= 22
+   GROUP BY plane_age
+   ORDER BY plane_age
+  ")
+```
+
+```{r}
+# Changing the column names of q2_newer_delayed_perc
+colnames(q2_newer_delayed_perc) <- c("Age of Planes", "Number of Flights", "Number of Delayed Flights", "% of Delayed Flights")
+
+# Printing the output of q2_newer_delayed_perc
+q2_newer_delayed_perc
+```
+
+#### Scatterplot of percentage of delayed flights by plane age (Newer planes)
+```{r}
+ggplot(q2_newer_delayed_perc, aes(x = `Age of Planes`, y = `% of Delayed Flights`)) +
+  geom_point(alpha= .3, size = 2, colour = "#9292cc") +
+  geom_smooth(aes(x = `Age of Planes`, y = `% of Delayed Flights`), se = TRUE, 
+              method = lm, color = "#b7b7ff", fill = "#c5c5ff") +
+  labs(title = "Figure 2e: Scatterplot of Percentage of Delayed Flights by Plane Age (Newer planes)", 
+    x = "Age of Planes", y = "Percentage of Delayed Flights") +
+  theme_linedraw() +
+  theme(plot.title = element_text(size = 13, hjust = 0.5, face = "bold"),
+        axis.title = element_text(size = 12), 
+        axis.text.x = element_text(size = 11, vjust = .5, hjust = .5),
+        axis.text.y = element_text(size = 11))
+```
+
+#### Part 3: Segment the older planes into one group (Older planes: > 22 years)
+```{r}
+# Selecting only flights with planes older than 22 years
+q2_older_planes <- q2 %>% filter(q2$`Age of Planes` > 22)
+```
+
+```{r}
+# Verifying the age only includes 23 to 51
+summary(q2_older_planes)
+
+# Verifying the total number of flights
+sum(q2_older_planes$`Number of Flights`) # 579,786 flights > 22 y/o
+```
+#### Scatterplot of average arrival delay by plane age (Older planes)
+```{r}
+ggplot(q2_older_planes, aes(x = `Age of Planes`, y = `Average Arrival Delay`)) +
+  geom_point(alpha= .3, size = 2, colour = "#87aa8e") + 
+  geom_smooth(aes(x = `Age of Planes`, y = `Average Arrival Delay`), se = TRUE, 
+              method = lm, color = "#a9d5b2", fill = "#baddc1") +
+  labs(title = "Figure 2f: Scatterplot of Average Arrival Delay by Plane Age (Older Planes)", 
+      x = "Age of Planes", y = "Average Arrival Delay (in mins)") +
+  theme_linedraw() +
+  theme(plot.title = element_text(size = 13, hjust = 0.5, face = "bold"),
+        axis.title = element_text(size = 12), 
+        axis.text.x = element_text(size = 11, vjust = .5, hjust = .5),
+        axis.text.y = element_text(size = 11))
+```
+
+#### Calculating the percentage of delayed flights for older planes
+```{r}
+q2_older_delayed_perc <- dbGetQuery(conn,
+  "SELECT (ontime.year - planes.year) AS plane_age, COUNT(*) AS NumOfFlights,
+    SUM(CASE WHEN ontime.ArrDelay > 0 THEN 1 ELSE 0 END) AS NumDelayedFlights,
+    ((CAST(SUM(CASE WHEN ArrDelay > 0 THEN 1 ELSE 0 END) AS FLOAT)/CAST(COUNT(*)
+      AS FLOAT))*100) AS delayed_percentage
+   FROM ontime INNER JOIN planes ON ontime.TailNum = planes.tailnum
+   WHERE plane_age > 22 and plane_age <= 51
+   GROUP BY plane_age
+   ORDER BY plane_age
+  ")
+```
+
+```{r}
+# Changing the column names of q2_older_delayed_perc
+colnames(q2_older_delayed_perc) <- c("Age of Planes", "Number of Flights", "Number of Delayed Flights", "% of Delayed Flights")
+
+# Printing the output of q2_older_delayed_perc
+q2_older_delayed_perc
+
+# Checking the number of delayed flights
+sum(q2_older_delayed_perc$`Number of Delayed Flights`) # 286,362 delayed flights
+```
+#### Scatterplot of percentage of delayed flights by plane age (Older planes)
+```{r}
+ggplot(q2_older_delayed_perc, aes(x = `Age of Planes`, y = `% of Delayed Flights`)) +
+  geom_point(alpha= .3, size = 2, colour = "#aa87a3") +
+  geom_smooth(aes(x = `Age of Planes`, y = `% of Delayed Flights`), 
+    se = TRUE, method = lm, color = "#ddbad6", fill = "#d5a9cc") +
+  labs(title = "Figure 2g: Percentage of Delayed Flights by Plane Age (Older planes)", 
+        x = "Age of Planes", y = "Percentage of Delayed Flights") +
+  theme_linedraw() +
+  theme(plot.title = element_text(size = 13, hjust = 0.5, face = "bold"),
+        axis.title = element_text(size = 12), 
+        axis.text.x = element_text(size = 11, vjust = .5, hjust = .5),
+        axis.text.y = element_text(size = 11))
+```
+
+
+```{r}
+# Disconnecting from the database
+dbDisconnect(conn)
+```

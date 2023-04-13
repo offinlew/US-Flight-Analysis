@@ -1,0 +1,315 @@
+---
+title: "coursework_Q4"
+output: html_document
+date: "2023-03-17"
+---
+
+# Setting up the workspace
+## Installing the necessary packages
+```{r}
+# install.packages("DBI")
+library(DBI)
+# install.packages("dplyr")
+library(dplyr)
+# install.packages("igraph")
+library(igraph)
+```
+
+## Setting and checking working directory
+```{r}
+setwd("~/Library/CloudStorage/OneDrive-SIM-SingaporeInstituteofManagement/Year 2/ST2195 - Programming for Data Science/Coursework/dataverse_files")
+getwd()
+```
+
+# Connecting to coursework_r database
+```{r}
+conn <- dbConnect(RSQLite::SQLite(), "coursework_r.db")
+```
+
+# Question 4
+## 4. Can you detect cascading failures as delays in one airport create delays in others?
+### Extracting the necessary data required for the question
+```{r}
+# Query ontime table
+ontime <- dbGetQuery(conn, 
+  "SELECT Origin, Dest, DepDelay, ArrDelay 
+   FROM ontime 
+   WHERE DepDelay > 0 AND DepDelay IS NOT NULL AND ArrDelay > 0 AND ArrDelay IS NOT NULL 
+   GROUP BY Origin, Dest
+  ")
+```
+
+### Conducting network analysis
+The rationale for conducting network analysis is to identify which nodes or edges in the network are the most important or influential. In the context of this question, airports are represented by nodes while flight routes are represented by edges, existing within the flight network of the USA. 
+
+To detect whether cascading failures as delays in one airport will lead to delays in others, identifying the most important or influential airport will allow us to gain insights into the potential impact of disruptions the airport will cause other airports in the network in terms of delay. Subsequently, identifying critical flight routes that are crucial for maintaining the connectivity of the flight network will enable us to better understand the impact of the disruptions that could ensue if these flights were to experience delays.
+
+#### Calculating node degree
+##### Why?
+Calculating node degree in a flight network can provide information about how well connected an airport is in terms of direct flight routes. In particular, the degree of a node (airport) represents the number of direct flight routes it has with other airports in the network.
+```{r}
+# Combining Origin and Dest columns (flight routes) from q5_ontime to create an edge list 
+edges <- ontime[, c("Origin", "Dest")]
+colnames(edges) <- c("from", "to")
+head(edges)
+```
+
+```{r}
+# Remove duplicate edges and self-loops
+edges <- unique(edges)
+edges <- edges[edges$from != edges$to, ]
+head(edges)
+```
+
+```{r}
+# Create network graph
+net <- graph.data.frame(edges, directed = T)
+```
+
+```{r}
+# Label the vertex
+V(net)$label <- V(net)$name
+```
+
+```{r}
+# Calculating the degree of each vertex in the flight network, where degree represents the number of connections to a node
+V(net)$degree <- degree(net) 
+```
+
+```{r}
+# Ploting a histogram of node degree
+hist(V(net)$degree,
+     col = 'yellow',
+     main = 'Histogram of Node Degree',
+     ylab = 'Number of Nodes',
+     xlab = 'Degree of Vertices')
+```
+
+#### Identifying the node with the highest degree
+```{r}
+# Create a data frame with node names and degrees
+node_degrees <- data.frame(name = V(net)$name, degree = V(net)$degree)
+
+# Sort the data frame by degree in descending order
+node_degrees <- node_degrees[order(-node_degrees$degree), ]
+
+# Print the top 5 nodes with the highest degree
+head(node_degrees, 5)
+```
+The node with the highest degree by some margin was Hartsfield-Jackson Atlanta International Airport (ATL). In the context of an airport network, the node with the highest degree can be perceived as a major hub and gateway for air travel due to it's accessibility, connectivity and importance. This is consistent with the fact that ATL has held the top spot as the world's busiest airport each year since 1988, except for 2020, due to the effects of the COVID-19 pandemic, which could have significantly contributed to the ATL node having the highest degree in the network. 
+
+As an airport that handles a significant amount of passenger traffic, ATL is likely to have a high number of direct connections (flights) with a large number of airports around the world, increasing connections and higher connectivity, factors which could have also contributed to the high degree of the ATL node. 
+
+Therefore, it would be appropriate to analyze the flight journeys of flights arriving and departing from ATL to detect whether delays in the airport would cause cascading failures in other airports, given that it would potentially have a greater impact for cascading failures or delays in other airports.
+
+#### Calculating the node betweenness centrality scores
+##### Why?
+An airport with a high betweenness centrality score may not have the highest degree, but it may serve as a critical hub connecting many airports with high degrees, which could indicate its importance in the network.
+```{r}
+# Add the arrival delay as a new edge attribute
+arr_delay <- ontime$ArrDelay
+E(net)$arr_delay <- arr_delay
+
+# Remove edges with negative or zero weights
+net <- delete.edges(net, which(E(net)$arr_delay <= 0))
+```
+
+```{r}
+# Calculate node betweenness centrality with normalized and positive weights
+bc <- betweenness(net, weights=E(net)$arr_delay, directed=TRUE)
+```
+
+```{r}
+# Add betweenness centrality as a new vertex attribute
+V(net)$betweenness <- bc
+
+# Create a data frame with node names and betweenness centrality
+node_bc <- data.frame(airport = V(net)$name, betweenness = V(net)$betweenness)
+
+# Sort the data frame by betweenness centrality in descending order
+node_bc <- node_bc[order(-node_bc$betweenness),]
+
+# Print the top 10 nodes with the highest normalized betweenness centrality
+head(node_bc, 10)
+```
+
+Once again the ATL node ranked the highest in terms of betweenness centrality scores, meaning that ATL has the most connections to other airports, as well as the highest potential to influence the flow of passengers in the flight network (USA) as it also had the highest node degree.
+
+This certifies that ATL is the major hub for air travel in the network, and thus, further supports the decision to analyze flights arriving and departing from ATL to detect whether delays in the airport would cause cascading failures in other airports.
+
+#### Calculating the edge betweenness centrality score
+##### Why?
+To understand which flight routes serve as important connections between different airports.
+```{r}
+# Calculate edge betweenness centrality with normalized and positive weights
+ebc <- edge_betweenness(net, weights = E(net)$arr_delay, directed = TRUE)
+```
+
+#### Identifying critical edges
+```{r}
+# Identify the critical edges (top 1% of betweenness centrality scores)
+n_edges <- length(E(net))
+critical_edges <- order(ebc, decreasing=TRUE)[1:floor(n_edges/100)]
+
+# Create a list of critical edges with their betweenness centrality score
+edges <- E(net)
+vertices <- V(net)
+critical_edges_list <- list()
+for (edge_idx in critical_edges) {
+    edge <- edges[edge_idx]
+    source_name <- vertices[.from(edge)]$label
+    target_name <- vertices[.to(edge)]$label
+    bc_score <- ebc[edge_idx]
+    critical_edges_list[[length(critical_edges_list)+1]] <- c(source_name, target_name, bc_score)
+}
+
+# Create a data frame with critical edges and their betweenness centrality score
+critical_edges_df <- as.data.frame(do.call(rbind, critical_edges_list))
+names(critical_edges_df) <- c("from", "to", "betweenness_centrality")
+
+# Print the critical edges and their betweenness centrality score
+head(critical_edges_df, 10)
+```
+
+MDW-ATL tops the list of critical edges based on their betweenness centrality score, this is significant as since ATL is highly connected to other aiports in the USA and serves as a crucial hub.
+
+#### Average arrival delay of the MDW-ATL flight route
+```{r}
+MDW_ATL_AvgArrDelay <- dbGetQuery(conn, 
+  "SELECT Route, AVG(ArrDelay) AS AvgArrDelay
+   FROM ontime JOIN airports ON ontime.Origin = airports.iata
+   WHERE Route = 'MDW-ATL' AND ArrDelay IS NOT NULL
+   ORDER BY AVG(ArrDelay) DESC
+  ")
+```
+
+```{r}
+print(MDW_ATL_AvgArrDelay)
+```
+
+### Part 1: Analyzing MDW-ATL flights with arrival delays close to the average arrival delay (Low degree of delay)
+```{r}
+# Identifying flights with the MDW-ATL route
+MDW_ATL_flights_p1 <- dbGetQuery(conn, 
+  "SELECT Year, Month, DayofMonth, DepTime, CRSDepTime, ArrTime, CRSArrTime, TailNum, ArrDelay,
+    DepDelay, Origin, Dest, airports1.airport AS 'Departure Airport', airports2.airport AS 'Arrival Airport'
+   FROM ontime 
+   JOIN airports AS airports1 ON ontime.Origin = airports1.iata
+   JOIN airports AS airports2 ON ontime.Dest = airports2.iata
+   WHERE Route = 'MDW-ATL' AND ArrDelay IS NOT NULL AND ArrDelay = 15 AND Cancelled = 0 AND Diverted = 0
+  ")
+```
+
+```{r}
+head(MDW_ATL_flights_p1)
+```
+
+#### Investigating flight N3736C specifically
+```{r}
+# Tracking flight number N3736C
+N3736C <- dbGetQuery(conn,
+  "SELECT Year, Month, DayofMonth, DepTime, CRSDepTime, ArrTime, CRSArrTime, TailNum, DepDelay,
+    ArrDelay, Origin, Dest, airports1.airport AS 'Departure Airport', airports2.airport AS 'Arrival Airport'
+   FROM ontime 
+   JOIN airports AS airports1 ON ontime.Origin = airports1.iata
+   JOIN airports AS airports2 ON ontime.Dest = airports2.iata
+   WHERE Year = 2005 AND Month = 1 AND DayofMonth = 22 AND TailNum = 'N3736C' 
+    AND Cancelled = 0 AND Diverted = 0
+   ORDER BY CRSDepTime
+  ")
+```
+
+```{r}
+head(N3736C)
+```
+
+```{r}
+# Extracting three rows from the data and store them in a new variable
+q5_N3736C <- N3736C[1:3, ]
+q5_N3736C
+```
+
+### Part 2: Analyzing MDW-ATL flights with arrival delays of an hour (Medium degree of delay)
+```{r}
+# Identifying flights with the HOU-ATL route
+MDW_ATL_flights_p2 <- dbGetQuery(conn, 
+   "SELECT Year, Month, DayofMonth, DepTime, CRSDepTime, ArrTime, CRSArrTime, TailNum, ArrDelay,
+      DepDelay, Origin, Dest, airports1.airport AS 'Departure Airport', airports2.airport AS 'Arrival Airport'
+    FROM ontime 
+    JOIN airports AS airports1 ON ontime.Origin = airports1.iata
+    JOIN airports AS airports2 ON ontime.Dest = airports2.iata
+    WHERE Route = 'MDW-ATL' AND ArrDelay IS NOT NULL AND ArrDelay = 60 AND Cancelled = 0 AND Diverted = 0
+   ")
+```
+
+```{r}
+head(MDW_ATL_flights_p2)
+```
+
+```{r}
+# Tracking flight number N925AT
+N948AT <- dbGetQuery(conn,
+  "SELECT Year, Month, DayofMonth, DepTime, CRSDepTime, ArrTime, CRSArrTime, 
+    TailNum, AirTime, ArrDelay, DepDelay, Origin, Dest, CarrierDelay, WeatherDelay, 
+    NASDelay, SecurityDelay, LateAircraftDelay, airports.airport AS 'Departing Airport'
+   FROM ontime JOIN airports ON ontime.Origin = airports.iata
+   WHERE Year = 2005 AND Month = 1 AND DayofMonth = 22 AND TailNum = 'N948AT' AND 
+    Cancelled = 0 AND Diverted = 0
+   ORDER BY CRSDepTime
+  ")
+```
+
+```{r}
+head(N948AT)
+```
+
+```{r}
+q5_N948AT <- N948AT[3:5, ]
+q5_N948AT
+```
+
+### Part 3: Analyzing MDW-ATL flights with arrival delays of two hours (High degree of delay)
+```{r}
+# Identifying flights with the MDW_ATL route
+MDW_ATL_flights_p3 <- dbGetQuery(conn, 
+  "SELECT Year, Month, DayofMonth, DepTime, CRSDepTime, ArrTime, CRSArrTime, 
+    TailNum, ArrDelay, DepDelay, Origin, Dest, CarrierDelay, WeatherDelay, 
+    NASDelay, SecurityDelay, LateAircraftDelay, airports.airport AS 'Departing Airport'
+   FROM ontime JOIN airports ON ontime.Origin = airports.iata
+   WHERE Route = 'MDW-ATL' AND ArrDelay IS NOT NULL AND ArrDelay = 120 AND 
+    Cancelled = 0 AND Diverted = 0
+  ")
+```
+
+```{r}
+head(MDW_ATL_flights_p3)
+```
+
+```{r}
+# Tracking flight number N878AS
+N878AS <- dbGetQuery(conn,
+  "SELECT Year, Month, DayofMonth, DepTime, CRSDepTime, ArrTime, CRSArrTime, TailNum, AirTime, 
+    ArrDelay, DepDelay, Origin, Dest, CarrierDelay, WeatherDelay, NASDelay, SecurityDelay, 
+    LateAircraftDelay, airports.airport AS 'Departing Airport'
+   FROM ontime JOIN airports ON ontime.Origin = airports.iata
+   WHERE Year = 2006 AND Month = 10 AND DayofMonth = 21 AND TailNum = 'N878AS' AND 
+    Cancelled = 0 AND Diverted = 0
+   ORDER BY CRSDepTime
+  ")
+```
+
+```{r}
+head(N878AS)
+```
+
+```{r}
+# Extracting three rows from the data and store them in a new variable
+q5_N878AS <- N878AS[3:5, ]
+q5_N878AS
+```
+
+
+```{r}
+# Disconnecting from the database
+dbDisconnect(conn)
+```
