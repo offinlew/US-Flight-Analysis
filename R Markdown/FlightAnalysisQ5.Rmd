@@ -420,7 +420,7 @@ at_rf$train(task, row_ids = train_set)
 ```
 
 ```{r}
-# Make predictions on the test set using the ridge regression model
+# Make predictions on the test set using the random forest regression model
 at_rf$predict(task, row_ids = test_set)$score()
 ```
 
