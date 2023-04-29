@@ -1,0 +1,513 @@
+---
+title: "coursework_Q5"
+output: html_document
+date: "2023-03-17"
+---
+
+# Setting up the workspace
+## Installing the necessary packages
+```{r}
+# install.packages("DBI")
+library(DBI)
+# install.packages("dplyr")
+library(dplyr)
+# install.packages("ggplot2")
+library(ggplot2)
+# install.packages("ggthemes")
+library(ggthemes)
+# install.packages("skimr")
+library(skimr)
+# install.packages("mlr3")
+library(mlr3)
+# install.packages("mlr3learners")
+library('mlr3learners')
+# install.packages("mlr3tuning")
+library('mlr3tuning')
+# install.packages("paradox")
+library(paradox)
+# install.packages("mlr3viz")
+library(mlr3viz)
+# install.packages("mlr3pipelines")
+library('mlr3pipelines')
+#install.packages("glmnet")
+#library(glmnet)
+# install.packages("caret")
+library(caret)
+# install.packages("caret")
+library(ranger)
+# install.packages("future")
+library(future)
+```
+
+## Setting and checking working directory
+```{r}
+# Setting the working directory
+setwd("~/Library/CloudStorage/OneDrive-SIM-SingaporeInstituteofManagement/Year 2/ST2195 - Programming for Data Science/Coursework/dataverse_files")
+getwd()
+```
+
+```{r}
+# Connecting to the database
+conn <- dbConnect(RSQLite::SQLite(), "coursework_r.db")
+```
+
+# Question 5
+## 2.5 Use the available resources to construct a model that predicts delays.
+### Selecting features relevant
+```{r}
+q5_features <- dbGetQuery(conn,
+  "SELECT ontime.Year, Month, DayofMonth, DayOfWeek, DepTime, CRSDepTime, ArrTime, 
+    CRSArrTime, AirTime, ArrDelay, DepDelay, Distance, CarrierDelay, WeatherDelay, 
+    NASDelay, SecurityDelay, LateAircraftDelay, (ontime.Year - planes.year) AS plane_age
+   FROM ontime 
+   JOIN planes ON ontime.TailNum = planes.tailnum
+   WHERE Cancelled = 0 AND Diverted = 0 AND plane_age >= 0 AND plane_age <= 51
+  ")
+```
+
+```{r}
+head(q5_features)
+
+nrow(q5_features) # 16,483,019 flights
+```
+
+```{r}
+# Checking for missing values
+skim(q5_features)
+```
+
+### Randomly sample 200,000 flights from the dataset
+```{r}
+set.seed(123) # Set seed for reproducibility
+sample_flights <- sample_n(q5_features, 200000)
+```
+
+```{r}
+# Set up a regression task to predict arrival delay
+task <- TaskRegr$new(id ='arrival_delay', backend = sample_flights, target ='ArrDelay')
+
+# Verify the target and feature variables being used
+print(task)
+```
+
+### Define a measure for evaluating model performance
+```{r}
+measure <- msr("regr.mse")
+```
+
+### Split the dataset into training and test sets
+```{r}
+set.seed(123) # Set seed for reproducibility
+train_set <- sample(task$nrow, 0.7 * task$nrow)
+test_set <- setdiff(seq_len(task$nrow), train_set)
+```
+
+### Linear regression model
+```{r}
+# Define the linear regression learner
+learner_lm <- lrn("regr.lm") 
+
+# Define the data preprocessing steps as a pipeline of computational steps
+gr_lm <- po("scale") %>>%
+  po("imputemean") %>>%
+  po(learner_lm)  # po creates a PipeOps object which represents a computational step
+glrn_lm <- GraphLearner$new(gr_lm)
+```
+
+```{r}
+future::plan()
+```
+
+```{r}
+# Train the linear regression model on the training set
+glrn_lm$train(task, row_ids = train_set)
+
+# Make predictions on the test set using the linear regression model
+glrn_lm$predict(task, row_ids = test_set)$score() # obtains the mean squared error value
+glrn_lm$predict(task, row_ids = test_set)
+```
+
+```{r}
+# Comparing the actual and predicted values
+prediction_lm <- glrn_lm$predict(task, row_ids = test_set)
+prediction_lm <- as.list(prediction_lm)
+
+actual_values_lm <- as.data.frame(prediction_lm$truth)
+predicted_values_lm <- as.data.frame(prediction_lm$response)
+
+performance_lm <- cbind(actual_values_lm, predicted_values_lm)
+colnames(performance_lm) <- c("Actual ArrDelay", "Predicted ArrDelay")
+head(performance_lm)
+```
+
+```{r}
+# Calculate differences between actual and predicted values
+performance_diff_lm <- performance_lm$`Actual ArrDelay` - performance_lm$`Predicted ArrDelay`
+head(performance_diff_lm)
+```
+
+```{r}
+# Create a scatter plot of the actual versus predicted values
+ggplot(performance_lm, aes(x = `Predicted ArrDelay`, y = `Actual ArrDelay`)) +
+  geom_point(color = '#d89fb0') +
+  geom_abline(slope = 1, intercept = 0, color = "#976f7b") +
+  labs(title = "Figure 5a: Performance of Linear Regression Model",
+       x = "Predicted Arrival Delay (in mins)",
+       y = "Actual Arrival Delay (in mins)") +
+  theme_bw() +
+  theme(plot.title = element_text(size = 15, hjust = 0.5, face = "bold"),
+        axis.text = element_text(size = 12),
+        axis.text.x = element_text(size = 12), 
+        axis.text.y = element_text(size = 12), 
+        legend.text = element_text(size = 12))
+```
+
+```{r}
+# Create a density plot of the residuals (Actual-Predicted)
+ggplot(performance_lm, aes(x = `Actual ArrDelay` - `Predicted ArrDelay`)) +
+  geom_density(color = "#ac7f8c", fill = "#d89fb0", alpha = 0.5) +
+  labs(title = "Figure 5b: Density Plot of Residuals",
+       x = "Residual (Actual - Predicted)",
+       y = "Density") +
+  theme_bw() +
+  theme(plot.title = element_text(size = 15, hjust = 0.5, face = "bold"),
+        axis.text = element_text(size = 12),
+        axis.text.x = element_text(size = 12), 
+        axis.text.y = element_text(size = 12), 
+        legend.text = element_text(size = 12))
+```
+
+### Lasso regression
+```{r}
+# Create a lasso regression model using glmnet
+learner_lasso <- lrn("regr.glmnet")
+learner_lasso$param_set$values <- list(alpha = 1)
+```
+
+```{r}
+# Set up the preprocessing steps and learner for the lasso regression model
+gr_lasso <- po('scale') %>>%
+  po('imputemean') %>>%
+  po(learner_lasso)
+glrn_lasso <- GraphLearner$new(gr_lasso)
+```
+
+```{r}
+# Define the tuning environment for the lasso regression model
+tune_lambda <- ParamSet$new (list(ParamDbl$new('regr.glmnet.lambda', lower = 0.001, upper = 2)))
+tuner<-tnr('grid_search')
+terminator <- trm('evals', n_evals = 20)
+```
+
+```{r}
+# Tune the hyperparameter lambda for the lasso regression model using cross-validation
+at_lasso <- AutoTuner$new(
+  learner = glrn_lasso,
+  resampling = rsmp('cv', folds = 3),
+  measure = measure,
+  search_space = tune_lambda,
+  terminator = terminator,
+  tuner = tuner
+)
+```
+
+```{r}
+future::plan()
+```
+
+```{r}
+set.seed(123) # To ensure reproducibility of results
+
+# Train the learner on the training data
+learner_lasso$train(task, row_ids = train_set)
+```
+
+```{r}
+# Make predictions on the test set using the lasso regression model
+learner_lasso$predict(task, row_ids = test_set)$score() 
+```
+
+```{r}
+# Comparing the actual and predicted values
+prediction_lasso <- learner_lasso$predict(task, row_ids = test_set)
+prediction_lasso <- as.list(prediction_lasso)
+
+actual_values_lasso <- as.data.frame(prediction_lasso$truth)
+predicted_values_lasso <- as.data.frame(prediction_lasso$response)
+
+performance_lasso <- cbind(actual_values_lasso, predicted_values_lasso)
+colnames(performance_lasso) <- c("Actual ArrDelay", "Predicted ArrDelay")
+head(performance_lasso)
+```
+
+```{r}
+# Calculate differences between actual and predicted values
+performance_diff_lasso <- performance_lasso$`Actual ArrDelay` - performance_lasso$`Predicted ArrDelay`
+head(performance_diff_lasso)
+```
+
+```{r}
+# Create a scatter plot of the actual versus predicted values
+ggplot(performance_lasso, aes(x = `Predicted ArrDelay`, y = `Actual ArrDelay`)) +
+  geom_point(color = '#99a7b6') +
+  geom_abline(slope = 1, intercept = 0, color = "#596672") +
+  labs(title = "Figure 5c: Performance of Lasso Regression Model",
+       x = "Predicted Arrival Delay (in mins)",
+       y = "Actual Arrival Delay (in mins)") +
+  theme_bw() +
+  theme(plot.title = element_text(size = 15, hjust = 0.5, face = "bold"),
+        axis.text = element_text(size = 12),
+        axis.text.x = element_text(size = 12), 
+        axis.text.y = element_text(size = 12), 
+        legend.text = element_text(size = 12))
+```
+
+```{r}
+# Create a density plot of the residuals (Actual-Predicted)
+ggplot(performance_lasso, aes(x = performance_diff_lasso)) +
+  geom_density(color = "#596672", fill = "#99a7b6", alpha = 0.5) +
+  labs(title = "Figure 5d: Density Plot of Residuals",
+       x = "Residual (Actual - Predicted)",
+       y = "Density") +
+  theme_bw() +
+  theme(plot.title = element_text(size = 15, hjust = 0.5, face = "bold"),
+        axis.text = element_text(size = 12),
+        axis.text.x = element_text(size = 12), 
+        axis.text.y = element_text(size = 12), 
+        legend.text = element_text(size = 12))
+```
+
+### Ridge regression
+```{r}
+# Create a ridge regression model using glmnet
+learner_ridge <- lrn('regr.glmnet') 
+learner_ridge$param_set$values <- list(alpha = 0) # Set alpha to 0 (ridge regression)
+```
+
+```{r}
+# Set up the preprocessing steps and learner for the ridge regression model
+gr_ridge <- po('scale') %>>%
+  po('imputemean') %>>%
+  po(learner_ridge)
+glrn_ridge <- GraphLearner$new(gr_ridge)
+```
+
+```{r}
+# Define the tuning environment for the ridge regression model
+tune_lambda <- ParamSet$new (list(ParamDbl$new('regr.glmnet.lambda', lower = 0.001, upper = 2)))
+tuner<-tnr('grid_search')
+terminator <- trm('evals', n_evals = 20)
+```
+
+```{r}
+# Tune the hyperparameter lambda for the ridge regression model using cross-validation
+at_ridge <- AutoTuner$new(
+  learner = glrn_ridge,
+  resampling = rsmp('cv', folds = 3),
+  measure = measure,
+  search_space = tune_lambda,
+  terminator = terminator,
+  tuner = tuner
+)
+```
+
+```{r}
+future::plan()
+```
+
+```{r}
+set.seed(123) # To ensure reproducibility of results
+
+# Train the learner on the training data
+at_ridge$train(task, row_ids = train_set)
+```
+
+```{r}
+# Make predictions on the test set using the ridge regression model
+at_ridge$predict(task, row_ids = test_set)$score()
+```
+
+```{r}
+# Comparing the actual and predicted values
+prediction_ridge <- at_ridge$predict(task, row_ids = test_set)
+prediction_ridge <- as.list(prediction_ridge)
+
+actual_values_ridge <- as.data.frame(prediction_ridge$truth)
+predicted_values_ridge <- as.data.frame(prediction_ridge$response)
+
+performance_ridge <- cbind(actual_values_ridge, predicted_values_ridge)
+colnames(performance_ridge) <- c("Actual ArrDelay", "Predicted ArrDelay")
+```
+
+```{r}
+# Calculate differences between actual and predicted values
+performance_diff_ridge <- performance_ridge$`Actual ArrDelay` - performance_ridge$`Predicted ArrDelay`
+head(performance_diff_ridge)
+```
+
+```{r}
+# Create a scatter plot of the actual versus predicted values
+ggplot(performance_ridge, aes(x = `Actual ArrDelay`, y = `Predicted ArrDelay`)) +
+  geom_point(color = '#f3dfce') +
+  geom_abline(slope = 1, intercept = 0, color = "#aa9c90") +
+  labs(title = "Figure 5e: Performance of Ridge Regression Model",
+       x = "Actual Arrival Delay (in mins)",
+       y = "Predicted Arrival Delay (in mins)") +
+  theme_bw() +
+  theme(plot.title = element_text(size = 15, hjust = 0.5, face = "bold"),
+        axis.text = element_text(size = 12),
+        axis.text.x = element_text(size = 12), 
+        axis.text.y = element_text(size = 12), 
+        legend.text = element_text(size = 12))
+```
+
+```{r}
+# Create a density plot of the residuals (Actual-Predicted)
+ggplot(performance_ridge, aes(x = `Actual ArrDelay` - `Predicted ArrDelay`)) +
+  geom_density(color = "#aa9c90", fill = "#f3dfce", alpha = 0.5) +
+  labs(title = "Figure 5f: Density Plot of Residuals",
+       x = "Residual (Actual - Predicted)",
+       y = "Density") +
+  theme_bw() +
+  theme(plot.title = element_text(size = 15, hjust = 0.5, face = "bold"),
+        axis.text = element_text(size = 12),
+        axis.text.x = element_text(size = 12), 
+        axis.text.y = element_text(size = 12), 
+        legend.text = element_text(size = 12))
+```
+
+### Random forest
+```{r}
+# Create a random forest learner
+learner_rf <- lrn('regr.ranger') 
+learner_rf$param_set$values <- list(min.node.size = 4)
+
+# Create a preprocessing graph that applies scaling and mean imputation before passing the data to the random forest learner
+gr_rf <- po('scale') %>>%
+  po('imputemean') %>>%
+  po(learner_rf)
+
+# Create a graph learner that combines the preprocessing graph and random forest learner
+glrn_rf <- GraphLearner$new(gr_rf)
+
+# Create a parameter set for tuning the number of trees in the random forest
+tune_ntrees <- ParamSet$new (list(
+ ParamInt$new('regr.ranger.num.trees', lower = 50, upper = 600)
+))
+```
+
+```{r}
+# Tune the hyperparameter lambda for the random forest model using cross-validation
+at_rf <- AutoTuner$new(
+  learner = glrn_rf,
+  resampling = rsmp('cv', folds = 3),
+  measure = measure,
+  search_space = tune_ntrees,
+  terminator = terminator,
+  tuner = tuner
+)
+```
+
+```{r}
+future::plan()
+```
+
+```{r}
+set.seed(123) # To ensure reproducibility of results
+
+# Train the learner on the training data
+at_rf$train(task, row_ids = train_set)
+```
+
+```{r}
+# Make predictions on the test set using the random forest regression model
+at_rf$predict(task, row_ids = test_set)$score()
+```
+
+```{r}
+# Comparing the actual and predicted values
+prediction_rf <- at_rf$predict(task, row_ids = test_set)
+prediction_rf <- as.list(prediction_rf)
+
+actual_values_rf <- as.data.frame(prediction_rf$truth)
+predicted_values_rf <- as.data.frame(prediction_rf$response)
+
+performance_rf <- cbind(actual_values_rf, predicted_values_rf)
+colnames(performance_rf) <- c("Actual ArrDelay", "Predicted ArrDelay")
+head(performance_rf)
+```
+
+```{r}
+# Calculate differences between actual and predicted values
+performance_diff_rf <- performance_rf$`Actual ArrDelay` - performance_rf$`Predicted ArrDelay`
+head(performance_diff_rf)
+```
+
+```{r}
+# Create a scatter plot of the actual versus predicted values
+ggplot(performance_rf, aes(x = `Actual ArrDelay`, y = `Predicted ArrDelay`)) +
+  geom_point(color = '#b0d8e2') +
+  geom_abline(slope = 1, intercept = 0, color = "#7b979e") +
+  labs(title = "Figure 5g: Performance of Random Forest Model",
+       x = "Actual Arrival Delay (in mins)",
+       y = "Predicted Arrival Delay (in mins)") +
+  theme_bw() +
+  theme(plot.title = element_text(size = 15, hjust = 0.5, face = "bold"),
+        axis.text = element_text(size = 12),
+        axis.text.x = element_text(size = 12), 
+        axis.text.y = element_text(size = 12), 
+        legend.text = element_text(size = 12))
+```
+
+```{r}
+# Create a density plot of the residuals (Actual-Predicted)
+ggplot(performance_rf, aes(x = performance_diff_rf)) +
+  geom_density(color = "#7b979e", fill = "#b0d8e2", alpha = 0.5) +
+  labs(title = "Figure 5h: Density Plot of Residuals",
+       x = "Residual (Actual - Predicted)",
+       y = "Density") +
+  theme_bw() +
+  theme(plot.title = element_text(size = 15, hjust = 0.5, face = "bold"),
+        axis.text = element_text(size = 12),
+        axis.text.x = element_text(size = 12), 
+        axis.text.y = element_text(size = 12), 
+        legend.text = element_text(size = 12))
+```
+
+### Benchmarking
+```{r}
+set.seed(123) # for reproducible results
+
+# Create a list of learners that we want to compare
+lrn_list <- list(
+  glrn_lm,
+  learner_lasso, 
+  at_ridge, 
+  at_rf
+)
+```
+
+```{r}
+future::plan()
+```
+
+```{r}
+# Set up the benchmark design for cross-validation with 3 folds and run the comparisons
+bm_design <- benchmark_grid(task = task, resamplings = rsmp('cv', folds = 3), learners = lrn_list)
+bmr <- benchmark(bm_design, store_models = TRUE)
+```
+
+```{r}
+# Visualize the comparisons made
+autoplot(bmr) + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+# To see the overall mse for each learner
+bmr$aggregate(measure)
+```
+
+```{r}
+# Disconnecting from the database
+dbDisconnect(conn)
+```
